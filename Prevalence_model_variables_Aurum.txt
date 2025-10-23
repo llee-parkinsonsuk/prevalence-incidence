@@ -1,0 +1,133 @@
+//CREATE OR REPLACE TABLE CPRD_MODELLING_AURUM AS
+with antipark_drugs as (SELECT *
+FROM prod_conform.cprd.aurum_antiparkinsontherapy_drugissue_202403
+),
+patients as (select pat.patid,pat.yob,pat.gender,prac.region from prod_conform.cprd.aurum_antiparkinsontherapy_patient_202403 pat
+left join prod_conform.cprd.aurum_antiparkinsontherapy_practice_202403 prac on pat.pracid=prac.pracid
+
+),
+therapy_stats AS (
+    SELECT 
+        patid,
+        MIN(TO_DATE(issuedate, 'DD/MM/YYYY')) AS firsttherapy,
+        MAX(TO_DATE(issuedate, 'DD/MM/YYYY')) AS lasttherapy
+    FROM antipark_drugs
+    GROUP BY patid
+),
+
+firstdrug as(select patid,
+   firsttherapy,
+   DATEDIFF('MONTH', firsttherapy, lasttherapy) AS therapy_duration
+FROM therapy_stats),
+
+
+drugclass as (select ad.patid,ad.prodcodeid,dc.drugclass from antipark_drugs ad
+left join sandpit.pairuthayaraj.drugclass_aurum dc on ad.prodcodeid=dc.prodcodeid),
+drugclass_flags AS (
+    SELECT
+        patid,
+        MAX(CASE WHEN drugclass = 'MAOB' THEN 1 ELSE 0 END) AS MAOB,
+        MAX(CASE WHEN drugclass = 'COMT' THEN 1 ELSE 0 END) AS COMT,
+        MAX(CASE WHEN drugclass = 'LD' THEN 1 ELSE 0 END) AS LD,
+        MAX(CASE WHEN drugclass = 'DA' THEN 1 ELSE 0 END) AS DA,
+        MAX(CASE WHEN drugclass = 'LD + COMT' THEN 1 ELSE 0 END) AS LDCOMT,
+        MAX(CASE WHEN drugclass = 'Ama' THEN 1 ELSE 0 END) AS Ama,
+        MAX(CASE WHEN drugclass = 'Other' THEN 1 ELSE 0 END) AS Other
+    FROM
+        drugclass
+    GROUP BY
+        patid
+),
+symptomgroups as(
+ SELECT obs.patid, TRIM(symptom.category) AS category
+    FROM prod_conform.cprd.aurum_antiparkinsontherapy_problem_202403 prob
+    LEFT JOIN prod_conform.cprd.aurum_antiparkinsontherapy_observation_202403 obs
+        ON prob.patid = obs.patid AND prob.obsid = obs.obsid
+    LEFT JOIN sandpit.pairuthayaraj.symptom_groups_aurum symptom
+        ON obs.medcodeid = symptom.medcodeid
+    WHERE symptom.medcodeid IS NOT NULL),
+
+symptoms as (SELECT
+    patid,
+    MAX(CASE WHEN category = 'Insomnia' THEN 1 ELSE 0 END) AS Insomnia,
+    MAX(CASE WHEN category = 'Fracture' THEN 1 ELSE 0 END) AS Fracture,
+    MAX(CASE WHEN category = 'Cough' THEN 1 ELSE 0 END) AS Cough,
+    MAX(CASE WHEN category = 'Actinic keratosis' THEN 1 ELSE 0 END) AS Actinic_keratosis,
+    MAX(CASE WHEN category = 'Acute sinusitis' THEN 1 ELSE 0 END) AS Acute_sinusitis,
+    MAX(CASE WHEN category = 'Carpal tunnel' THEN 1 ELSE 0 END) AS Carpal_tunnel,
+    MAX(CASE WHEN category = 'Falls' THEN 1 ELSE 0 END) AS Falls,
+    MAX(CASE WHEN category = 'Tremor' THEN 1 ELSE 0 END) AS Tremor,
+    MAX(CASE WHEN category = 'Sore throat' THEN 1 ELSE 0 END) AS Sore_throat,
+    MAX(CASE WHEN category = 'Depression' THEN 1 ELSE 0 END) AS Depression,
+    MAX(CASE WHEN category = 'Pain' THEN 1 ELSE 0 END) AS Pain,
+    MAX(CASE WHEN category = 'Breast lump' THEN 1 ELSE 0 END) AS Breast_lump
+FROM symptomgroups
+GROUP BY patid),
+
+ledd as (select * from sandpit.pairuthayaraj.yearlyleddscore_multiple
+union
+select * from sandpit.pairuthayaraj.yearlyleddscore_pd
+union 
+select * from sandpit.pairuthayaraj.yearlyleddscore_none
+union
+select * from sandpit.pairuthayaraj.yearlyleddscore_other)
+
+//original code
+select fd.patid,
+CASE
+        WHEN pat.gender = 1 THEN 'Male'
+        WHEN pat.gender = 2 THEN 'Female'
+        WHEN pat.gender = 3 THEN 'Other'
+ END AS gender,        
+(2023 - CAST(pat.yob AS INTEGER)) AS age,
+CASE
+        WHEN pat.region = 0 THEN 'None'
+        WHEN pat.region = 1 THEN 'North East'
+        WHEN pat.region = 2 THEN 'North West'
+        WHEN pat.region = 3 THEN 'Yorkshire and The Humber'
+        WHEN pat.region = 4 THEN 'East Midlands'
+        WHEN pat.region = 5 THEN 'West Midlands'
+        WHEN pat.region = 6 THEN 'East of England'
+        WHEN pat.region = 7 THEN 'London'
+        WHEN pat.region = 8 THEN 'South East'
+        WHEN pat.region = 9 THEN 'South West'
+        WHEN pat.region = 10 THEN 'Wales'
+        WHEN pat.region = 11 THEN 'Scotland'
+        WHEN pat.region = 12 THEN 'Northern Ireland'
+        ELSE 'Unknown'
+ END AS region,fd.firsttherapy,fd.therapy_duration,
+(EXTRACT(YEAR FROM fd.firsttherapy) - CAST(pat.yob AS INTEGER)) AS age_at_firsttherapy,
+dcf.MAOB,dcf.COMT,dcf.LD,dcf.DA,dcf.LDCOMT,dcf.Ama,dcf.Other,
+COALESCE(symp.Insomnia, 0) AS Insomnia,
+    COALESCE(symp.Fracture, 0) AS Fracture,
+    COALESCE(symp.Cough, 0) AS Cough,
+    COALESCE(symp.Actinic_keratosis, 0) AS Actinic_keratosis,
+    COALESCE(symp.Acute_sinusitis, 0) AS Acute_sinusitis,
+    COALESCE(symp.Carpal_tunnel, 0) AS Carpal_tunnel,
+    COALESCE(symp.Falls, 0) AS Falls,
+    COALESCE(symp.Tremor, 0) AS Tremor,
+    COALESCE(symp.Sore_throat, 0) AS Sore_throat,
+    COALESCE(symp.Depression, 0) AS Depression,
+    COALESCE(symp.Pain, 0) AS Pain,
+    COALESCE(symp.Breast_lump, 0) AS Breast_lump,
+    COALESCE(ledd.ledd_2023, 0) AS ledd_2023,
+    COALESCE(ledd.ledd_2022, 0) AS ledd_2022,
+    COALESCE(ledd.ledd_2021, 0) AS ledd_2021,
+    COALESCE(ledd.ledd_2020, 0) AS ledd_2020,
+    COALESCE(ledd.ledd_2019, 0) AS ledd_2019,
+    COALESCE(ledd.ledd_2018, 0) AS ledd_2018,
+aurum_smoking_bmi.smokingcategory,aurum_smoking_bmi.bmi,
+'Aurum' AS database,COALESCE(hd.category, mg.category) AS diagnosis_group
+from firstdrug fd
+left join patients pat on pat.patid=fd.patid 
+left join drugclass_flags dcf on dcf.patid=fd.patid
+left join symptoms symp on symp.patid=fd.patid
+left join ledd on ledd.patid=fd.patid
+left join sandpit.pairuthayaraj.aurum_smoking_bmi on aurum_smoking_bmi.patid=fd.patid
+left join sandpit.pairuthayaraj.allantipark_modelgroups mg on mg.patid=fd.patid
+LEFT JOIN sandpit.pairuthayaraj.hes_diagnosis_aurum_model hd ON hd.patid = fd.patid
+
+
+
+
+

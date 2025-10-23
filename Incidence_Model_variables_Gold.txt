@@ -1,0 +1,155 @@
+CREATE OR REPLACE TABLE SANDPIT.PAIRUTHAYARAJ.GOLD_INCIDENCE_MODEL_VARIABLES AS
+
+
+//For each patient, we considered records up to mid of the following year from their first therapy year
+//this was used as the cutoff date for collecting model variables.
+with patients_cutoff as (SELECT 
+    "patid",
+    MIN(TO_DATE("eventdate", 'DD/MM/YYYY')) AS firsttherapy,
+    DATEADD(YEAR, 1, DATE_TRUNC('YEAR', MIN(TO_DATE("eventdate", 'DD/MM/YYYY')))) + INTERVAL '6 MONTHS' AS cutoffdate
+FROM 
+    prod_conform.cprd.gold_incidence_modelling_therapy
+GROUP BY 
+    "patid"
+),
+
+patients as (select pat."patid",pat."gender",pat."yob",prac."region" from prod_conform.cprd.gold_incidence_modelling_patient pat
+left join prod_conform.cprd.gold_incidence_modelling_practice prac on CAST(SUBSTRING(pat."patid", -5) AS INT) = prac."pracid"
+),
+
+cutoffyear as (select "patid",
+    EXTRACT(YEAR FROM cutoffdate) AS cutoffyear
+FROM patients_cutoff),
+
+patientsage as (select p."patid",p."yob",CAST(cy.cutoffyear - p."yob" AS INTEGER) AS age from patients p left join cutoffyear cy on cy."patid"=p."patid"),
+
+    
+therapydetails as ( SELECT 
+        t.*,
+        p.cutoffdate
+    FROM 
+        prod_conform.cprd.gold_incidence_modelling_therapy t
+    JOIN 
+        patients_cutoff p
+    ON 
+        t."patid" = p."patid"
+    WHERE 
+        TO_DATE(t."eventdate", 'DD/MM/YYYY') <= p.cutoffdate
+),
+
+clinicaldetails as ( SELECT 
+        c.*,
+        p.cutoffdate
+    FROM 
+        prod_conform.cprd.gold_incidence_modelling_clinical c
+    JOIN 
+        patients_cutoff p
+    ON 
+        c."patid" = p."patid"
+    WHERE 
+        TRY_TO_DATE(c."eventdate", 'DD/MM/YYYY') <= p.cutoffdate),
+
+  therapy_stats AS (
+    SELECT 
+        "patid",
+        MIN(TO_DATE("eventdate", 'DD/MM/YYYY')) AS firsttherapy,
+        MAX(TO_DATE("eventdate", 'DD/MM/YYYY')) AS lasttherapy
+    FROM therapydetails
+    GROUP BY "patid"
+),     
+  
+firstdrug as(select "patid",
+   firsttherapy,
+   DATEDIFF('DAY', firsttherapy, lasttherapy) AS therapy_duration
+FROM therapy_stats),
+
+drugclass as (select td."patid",td."prodcode",dc.drugclass from therapydetails td
+left join SANDPIT.RGRAVESANDE.GOLD_CONVERSION_FACTOR dc on td."prodcode"=dc.prodcode),
+
+drugclass_flags AS (
+    SELECT
+        "patid",
+        MAX(CASE WHEN drugclass = 'MAOB' THEN 1 ELSE 0 END) AS MAOB,
+        MAX(CASE WHEN drugclass = 'COMT' THEN 1 ELSE 0 END) AS COMT,
+        MAX(CASE WHEN drugclass = 'LD' THEN 1 ELSE 0 END) AS LD,
+        MAX(CASE WHEN drugclass = 'DA' THEN 1 ELSE 0 END) AS DA,
+        MAX(CASE WHEN drugclass = 'LD + COMT' THEN 1 ELSE 0 END) AS LDCOMT,
+        MAX(CASE WHEN drugclass = 'Ama' THEN 1 ELSE 0 END) AS Ama,
+        MAX(CASE WHEN drugclass = 'Other' THEN 1 ELSE 0 END) AS Other
+    FROM
+        drugclass
+    GROUP BY
+        "patid"
+),
+
+onlysymptoms as (
+SELECT 
+        a."patid",a."medcode", TRIM(b.category) as category
+        
+    FROM 
+         clinicaldetails a
+    INNER JOIN 
+        sandpit.pairuthayaraj.symptom_groups_gold b
+    ON 
+        a."medcode" = b.medcode
+    WHERE 
+        a."constype" IN (1, 3)),
+
+
+        
+symptoms as (SELECT
+    "patid",
+    MAX(CASE WHEN category = 'Insomnia' THEN 1 ELSE 0 END) AS Insomnia,
+    MAX(CASE WHEN category = 'Fracture' THEN 1 ELSE 0 END) AS Fracture,
+    MAX(CASE WHEN category = 'Cough' THEN 1 ELSE 0 END) AS Cough,
+    MAX(CASE WHEN category = 'Actinic keratosis' THEN 1 ELSE 0 END) AS Actinic_keratosis,
+    MAX(CASE WHEN category = 'Acute sinusitis' THEN 1 ELSE 0 END) AS Acute_sinusitis,
+    MAX(CASE WHEN category = 'Carpal tunnel' THEN 1 ELSE 0 END) AS Carpal_tunnel,
+    MAX(CASE WHEN category = 'Falls' THEN 1 ELSE 0 END) AS Falls,
+    MAX(CASE WHEN category = 'Tremor' THEN 1 ELSE 0 END) AS Tremor,
+    MAX(CASE WHEN category = 'Sore throat' THEN 1 ELSE 0 END) AS Sore_throat,
+    MAX(CASE WHEN category = 'Depression' THEN 1 ELSE 0 END) AS Depression,
+    MAX(CASE WHEN category = 'Pain' THEN 1 ELSE 0 END) AS Pain,
+    MAX(CASE WHEN category = 'Breast lump' THEN 1 ELSE 0 END) AS Breast_lump
+FROM onlysymptoms
+GROUP BY "patid")
+
+select p."patid",CASE
+        WHEN p."gender" = 1 THEN 'Male'
+        WHEN p."gender" = 2 THEN 'Female'
+        WHEN p."gender" = 3 THEN 'Other'
+ END AS gender,pa.age,CASE
+        WHEN p."region" = 1 THEN 'North East'
+        WHEN p."region" = 2 THEN 'North West'
+        WHEN p."region"= 3 THEN 'Yorkshire and The Humber'
+        WHEN p."region" = 4 THEN 'East Midlands'
+        WHEN p."region" = 5 THEN 'West Midlands'
+        WHEN p."region" = 6 THEN 'East of England'
+        WHEN p."region" = 7 THEN 'London'
+        WHEN p."region" = 8 THEN 'South East'
+        WHEN p."region" = 9 THEN 'South West'
+        WHEN p."region" = 10 THEN 'Wales'
+        WHEN p."region" = 11 THEN 'Scotland'
+        WHEN p."region" = 12 THEN 'Northern Ireland'
+        ELSE 'Unknown'
+ END AS region,fd.therapy_duration,dcf.MAOB,dcf.COMT,dcf.LD,dcf.DA,dcf.LDCOMT,dcf.Ama,dcf.Other,
+COALESCE(symp.Insomnia, 0) AS Insomnia,
+    COALESCE(symp.Fracture, 0) AS Fracture,
+    COALESCE(symp.Cough, 0) AS Cough,
+    COALESCE(symp.Actinic_keratosis, 0) AS Actinic_keratosis,
+    COALESCE(symp.Acute_sinusitis, 0) AS Acute_sinusitis,
+    COALESCE(symp.Carpal_tunnel, 0) AS Carpal_tunnel,
+    COALESCE(symp.Falls, 0) AS Falls,
+    COALESCE(symp.Tremor, 0) AS Tremor,
+    COALESCE(symp.Sore_throat, 0) AS Sore_throat,
+    COALESCE(symp.Depression, 0) AS Depression,
+    COALESCE(symp.Pain, 0) AS Pain,
+    COALESCE(symp.Breast_lump, 0) AS Breast_lump,ail.avg_ledd,ail.max_ledd,ail.min_ledd,ail.total_ledd,aid.smokingstatus,gib.bmi,aid."GROUP" as diagnosis,'GOLD' as datasource
+from patients p
+left join firstdrug fd on p."patid"=fd."patid"
+left join drugclass_flags dcf on dcf."patid"=p."patid"
+left join symptoms symp on symp."patid"=p."patid"
+left join patientsage pa on pa."patid"=p."patid"
+left join sandpit.pairuthayaraj.GOLD_INCIDENCE_LEDD ail on ail."patid"=p."patid"
+left join sandpit.pairuthayaraj.GOLD_INCIDENCEMODEL_DIAGNOSIS aid on aid.patid=p."patid"
+left join sandpit.pairuthayaraj.gold_incidencemodel_bmi gib on gib.patid=p."patid"
